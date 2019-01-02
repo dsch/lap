@@ -46,7 +46,7 @@ func startHttpServer() *httptest.Server {
 }
 
 func startProxy() (ListenerAndServer, *http.Client) {
-	proxy := NewProxyServer()
+	proxy := NewProxyServer(&DefaultConfig)
 	go listen(proxy)
 
 	proxyUrl := &url.URL{Scheme: "http", Host: "localhost:8080"}

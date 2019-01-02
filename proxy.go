@@ -5,25 +5,48 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
+
+type Config struct {
+	Addr    string
+	Proxy   string
+	Exclude []string
+}
 
 type ListenerAndServer interface {
 	ListenAndServe() error
 	Close() error
 }
 
+type Requester interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 type proxy struct {
-	server http.Server
-	client http.Client
+	config *Config
+	server ListenerAndServer
+	client Requester
 }
 
 func NeverFollowRedirects(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+func useProxy(host string, exclude []string) bool {
+	for _, val := range exclude {
+		if val == host {
+			return false
+		}
+	}
+	return true;
+}
+
 func (prx *proxy) handleHttp(w http.ResponseWriter, req *http.Request) {
 	log.Printf("%s %s", req.Method, req.URL)
+	useUpstreamProxy := useProxy(req.Host, prx.config.Exclude)
+	log.Printf("useProxy: %s", useUpstreamProxy)
 
 	req2, err := http.NewRequest(req.Method, req.URL.String(), req.Body)
 	copyHeader(req2.Header, req.Header)
@@ -50,7 +73,7 @@ func (prx *proxy) handleHttp(w http.ResponseWriter, req *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-func hanndleConnect(w http.ResponseWriter, r *http.Request) {
+func handleConnect(w http.ResponseWriter, r *http.Request) {
 	log.Print("CONNECT ", r.Host)
 	destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
 	if err != nil {
@@ -101,7 +124,7 @@ func copyHeader(dst, src http.Header) {
 
 func (prx *proxy) Handler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
-		hanndleConnect(w, r)
+		handleConnect(w, r)
 	} else {
 		prx.handleHttp(w, r)
 	}
@@ -115,25 +138,64 @@ func (prx *proxy) Close() error {
 	return prx.server.Close()
 }
 
-func NewProxyServer() ListenerAndServer {
-	prx := &proxy{
-		server: http.Server{
-			Addr:              ":8080",
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       30 * time.Second,
-			WriteTimeout:      30 * time.Second,
-			MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
-		},
-		client: http.Client{
-			Timeout:       10 * time.Second,
-			CheckRedirect: NeverFollowRedirects,
-		},
+func (prx *proxy) UpstreamProxy(request *http.Request) (*url.URL, error) {
+	if useProxy(request.Host, prx.config.Exclude) {
+		log.Print("use upstream proxy")
+		return url.Parse("http://" + prx.config.Proxy)
+	} else {
+		log.Print("use no upstream proxy")
+		return nil, nil // use no proxy
 	}
-	prx.server.Handler = http.HandlerFunc(prx.Handler)
+}
+
+func NewProxyServer(config *Config) ListenerAndServer {
+	transport := http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: true,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	client := http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: NeverFollowRedirects,
+		Transport:     &transport,
+	}
+
+	server := http.Server{
+		Addr:              config.Addr,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
+	}
+
+	prx := &proxy{
+		config: config,
+		server: &server,
+		client: &client,
+	}
+
+	// function injection
+	server.Handler = http.HandlerFunc(prx.Handler)
+	transport.Proxy = prx.UpstreamProxy
 	return prx
 }
 
+var DefaultConfig = Config{
+	Addr:    "localhost:8080",
+	Proxy:   "localhost:3128",
+	Exclude: []string{"www.orf.at", "orf.at"},
+}
+
 func main() {
-	server := NewProxyServer()
+	config := DefaultConfig
+	log.Printf("Config: %s", config)
+	server := NewProxyServer(&config)
 	log.Fatal(server.ListenAndServe())
 }
