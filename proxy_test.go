@@ -14,7 +14,7 @@ func listen(server *http.Server) {
 	log.Fatal(server.ListenAndServe())
 }
 
-func TestGet(t *testing.T) {
+func TestHttp(t *testing.T) {
 	proxy, client := startProxy()
 	defer proxy.Close()
 
@@ -34,21 +34,19 @@ func TestGet(t *testing.T) {
 		assert.Equal(t, nil, err, "no error")
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "status OK")
 	})
+
 }
 
 func startHttpServer() *httptest.Server {
 	// Start a local HTTP server
-	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.Write([]byte(`OK`))
 	}))
 	return server
 }
 
 func startProxy() (*http.Server, *http.Client) {
-	proxy := &http.Server{
-		Addr:    ":8080",
-		Handler: http.HandlerFunc(Handler),
-	}
+	proxy := CreateProxyServer()
 	go listen(proxy)
 
 	proxyUrl := &url.URL{Scheme: "http", Host: "localhost:8080"}

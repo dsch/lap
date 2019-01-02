@@ -8,29 +8,44 @@ import (
 	"time"
 )
 
-func handleHTTP(w http.ResponseWriter, req *http.Request) {
+func NeverFollowRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+func handleHttp(w http.ResponseWriter, req *http.Request) {
 	log.Printf("%s %s", req.Method, req.URL)
 
-	resp, err := http.DefaultTransport.RoundTrip(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: NeverFollowRedirects,
 	}
 
-	hasBody := req.Method != http.MethodHead
+	req2, err := http.NewRequest(req.Method, req.URL.String(), req.Body)
+	copyHeader(req2.Header, req.Header)
+	if err != nil {
+		log.Print(err.Error())
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
-	if hasBody {
-		if resp.Body != nil {
-			defer resp.Body.Close()
-		}
+	resp, err := client.Do(req2)
+	if err != nil {
+		log.Print(err.Error())
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	log.Printf("Respone: %s", resp.Status)
+
+	if resp.Body != nil {
+		defer resp.Body.Close()
 	}
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	if hasBody {
-		io.Copy(w, resp.Body)
-	}
+	io.Copy(w, resp.Body)
 }
 
-func handleTunneling(w http.ResponseWriter, r *http.Request) {
+func hanndleConnect(w http.ResponseWriter, r *http.Request) {
 	log.Print("CONNECT ", r.Host)
 	destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
 	if err != nil {
@@ -59,24 +74,46 @@ func transfer(destination io.WriteCloser, source io.ReadCloser) {
 
 func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
+		switch k {
+		case "Keep-Alive":
+		case "Transfer-Encoding":
+		case "TE":
+		case "Connection":
+		case "Trailer":
+		case "Proxy-Authorization":
+		case "Proxy-Authenticate":
+		case "Proxy-Connection":
+			break
+
+		default:
+			for _, v := range vv {
+				log.Printf("%s: %s", k, v)
+				dst.Add(k, v)
+			}
 		}
 	}
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
-		handleTunneling(w, r)
+		hanndleConnect(w, r)
 	} else {
-		handleHTTP(w, r)
+		handleHttp(w, r)
+	}
+}
+
+func CreateProxyServer() *http.Server {
+	return &http.Server{
+		Addr:              ":8080",
+		Handler:           http.HandlerFunc(Handler),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
 	}
 }
 
 func main() {
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: http.HandlerFunc(Handler),
-	}
+	server := CreateProxyServer()
 	log.Fatal(server.ListenAndServe())
 }
