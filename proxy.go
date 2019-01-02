@@ -8,17 +8,22 @@ import (
 	"time"
 )
 
+type ListenerAndServer interface {
+	ListenAndServe() error
+	Close() error
+}
+
+type proxy struct {
+	server http.Server
+	client http.Client
+}
+
 func NeverFollowRedirects(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-func handleHttp(w http.ResponseWriter, req *http.Request) {
+func (prx *proxy) handleHttp(w http.ResponseWriter, req *http.Request) {
 	log.Printf("%s %s", req.Method, req.URL)
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: NeverFollowRedirects,
-	}
 
 	req2, err := http.NewRequest(req.Method, req.URL.String(), req.Body)
 	copyHeader(req2.Header, req.Header)
@@ -28,7 +33,7 @@ func handleHttp(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	resp, err := client.Do(req2)
+	resp, err := prx.client.Do(req2)
 	if err != nil {
 		log.Print(err.Error())
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -94,26 +99,41 @@ func copyHeader(dst, src http.Header) {
 	}
 }
 
-func Handler(w http.ResponseWriter, r *http.Request) {
+func (prx *proxy) Handler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		hanndleConnect(w, r)
 	} else {
-		handleHttp(w, r)
+		prx.handleHttp(w, r)
 	}
 }
 
-func CreateProxyServer() *http.Server {
-	return &http.Server{
-		Addr:              ":8080",
-		Handler:           http.HandlerFunc(Handler),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
+func (prx *proxy) ListenAndServe() error {
+	return prx.server.ListenAndServe()
+}
+
+func (prx *proxy) Close() error {
+	return prx.server.Close()
+}
+
+func NewProxyServer() ListenerAndServer {
+	prx := &proxy{
+		server: http.Server{
+			Addr:              ":8080",
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
+		},
+		client: http.Client{
+			Timeout:       10 * time.Second,
+			CheckRedirect: NeverFollowRedirects,
+		},
 	}
+	prx.server.Handler = http.HandlerFunc(prx.Handler)
+	return prx
 }
 
 func main() {
-	server := CreateProxyServer()
+	server := NewProxyServer()
 	log.Fatal(server.ListenAndServe())
 }

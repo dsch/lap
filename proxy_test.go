@@ -10,8 +10,8 @@ import (
 	"testing"
 )
 
-func listen(server *http.Server) {
-	log.Fatal(server.ListenAndServe())
+func listen(proxy ListenerAndServer) {
+	log.Fatal(proxy.ListenAndServe())
 }
 
 func TestHttp(t *testing.T) {
@@ -39,14 +39,14 @@ func TestHttp(t *testing.T) {
 
 func startHttpServer() *httptest.Server {
 	// Start a local HTTP server
-		server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.Write([]byte(`OK`))
 	}))
 	return server
 }
 
-func startProxy() (*http.Server, *http.Client) {
-	proxy := CreateProxyServer()
+func startProxy() (ListenerAndServer, *http.Client) {
+	proxy := NewProxyServer()
 	go listen(proxy)
 
 	proxyUrl := &url.URL{Scheme: "http", Host: "localhost:8080"}
